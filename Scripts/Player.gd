@@ -13,15 +13,25 @@ var motion = Vector2()
 var direction = Vector2()
 var facing_direction = 1 # 1 = right -1 = left
 var can_dash = true
+var wall_jump_time = 7
+var wall_jump_timer = wall_jump_time
+
+#Camera Variables
+var cam_follow_player = false
+var area_collision_shape
+var area_size
+
 onready var dash_timer = get_node("DashTimer")
 onready var collision_ray = get_node("CollisionRay")
-var _position = Vector2()
+onready var tween = get_node("Tween")
+
 # States
 enum {
 	IDLE
 	FREE 
 	DASH
 	ON_WALL
+	WALL_JUMP
 	}
 var state: int = FREE
 
@@ -31,7 +41,6 @@ func _ready():
 # warning-ignore:unused_argument
 func _physics_process(delta):
 	$Sprite.visible = true
-	_position = position
 	# Flip ray to player's direction
 	var ray_length = 9
 	collision_ray.cast_to.x = facing_direction* ray_length
@@ -58,7 +67,6 @@ func _physics_process(delta):
 		direction.y = 1
 	else:
 		direction.y = 0
-	
 	match state:
 	# Free State (Movement)
 		FREE:
@@ -70,7 +78,8 @@ func _physics_process(delta):
 			motion.x = clamp(motion.x, -MAX_MOVESPEED, MAX_MOVESPEED)
 							
 			if(Input.is_action_pressed("right") || Input.is_action_pressed("left")):
-				$AnimationPlayer.play("Run")
+				if($AnimationPlayer.current_animation != "Jump" || $AnimationPlayer.current_animation != "Falling"):
+					$AnimationPlayer.play("Run")
 				facing_direction = direction.x
 				motion.x += ACCELERATION * direction.x
 			else:
@@ -91,15 +100,14 @@ func _physics_process(delta):
 					$AnimationPlayer.play("Jump")
 				elif(motion.y > 0):
 					$AnimationPlayer.play("Falling")
-
 			# Varaible Jump Height
 			if(!Input.is_action_pressed("jump") && motion.y < 0):
+# warning-ignore:integer_division
 				motion.y = max(motion.y, -JUMPFORCE/2)
 				
-			if(collision_ray.is_colliding() && !is_on_floor() && motion.y > 0 && direction.x != 0):
+			"""if(collision_ray.is_colliding() && !is_on_floor() && motion.y > 0 && direction.x != 0):
 				motion.y = motion.y/2
-				change_state(ON_WALL)
-		
+				change_state(ON_WALL)""" # Might remove wall mechanic
 		# Dash State
 		DASH:
 			$Sprite.visible = false
@@ -118,7 +126,7 @@ func _physics_process(delta):
 				motion.y = -JUMPFORCE
 				can_dash = false
 				change_state(FREE)
-			motion = lerp(motion, orb_motion, 0.035 )"""
+			motion = lerp(motion, orb_motion, 0.035 )"""	# Orb lfying mechanic code
 			
 			if(direction.y != 0 && can_dash):
 				motion.y = DASHSPEED * direction.y
@@ -130,27 +138,47 @@ func _physics_process(delta):
 			motion = motion.normalized() * DASHSPEED	# Normalize Vector
 		# On Wall State
 		ON_WALL:
-			$Sprite.scale.x = -facing_direction;
-			$AnimationPlayer.play("On_Wall_Idle")
+			$Sprite.scale.x = -facing_direction # Only for this sprite because climbing is flipped
+				
 			# Wall Grab
 			if(Input.is_action_pressed("grab")):
 				motion.y = 0
 				if(direction.y != 0):
+# warning-ignore:integer_division
 					motion.y *= -JUMPFORCE/4
+				if(direction.y < 0):
+					$AnimationPlayer.play("Climbing")
+					motion.y = direction.y * MAX_MOVESPEED / 4
+				elif(direction.y > 0):
+					$AnimationPlayer.play_backwards("Climbing")
+					motion.y = direction.y * MAX_MOVESPEED / 4
+				else:
+					$AnimationPlayer.play("On_Wall_Idle")
 			else:
+				$AnimationPlayer.play("On_Wall_Idle")
+# warning-ignore:integer_division
 				motion.y += GRAVITY/8
-			if(Input.is_action_just_pressed("jump") && Input.is_action_pressed("grab") && direction.x == facing_direction):
-				motion.y = -JUMPFORCE
-				change_state(FREE)
-			elif(Input.is_action_just_pressed("jump")):
-				motion.y = -JUMPFORCE
-				motion.x = -facing_direction * 1000
-				change_state(FREE)
+			if(Input.is_action_just_pressed("jump") && Input.is_action_pressed("grab")):
+# warning-ignore:integer_division
+				motion.y = -JUMPFORCE/2
+				if(direction.x == -facing_direction):
+					motion.x = -facing_direction * MAX_MOVESPEED*2
+					change_state(WALL_JUMP)
+				else:
+					change_state(FREE)
 			if(!Input.is_action_pressed("grab") && direction.x != facing_direction):
 				change_state(FREE)
 			if(!collision_ray.is_colliding() || is_on_floor()):
 				change_state(FREE)
+				
+		WALL_JUMP:
+			wall_jump_timer -= 1
+			if(wall_jump_timer < 0):
+				wall_jump_timer = wall_jump_time
+				change_state(FREE)
 	update() # Calls  the draw function
+# warning-ignore:unused_variable
+	var cam = get_node("../Anchor")
 # Changes stat
 
 func _draw():
@@ -163,3 +191,32 @@ func change_state(target_state: int):
 func DashTimer_Timeout():
 	can_dash = false
 	change_state(FREE)
+
+func _on_RoomDetector_area_entered(area):
+	area_collision_shape = area.get_node("CollisionShape2D")
+	area_size = area_collision_shape.shape.extents * 2
+	var room_transition_timer = get_node("RoomTransTimer")	
+	var camera_target_position = area.get_node("Position2D")
+	var camera_anchor = get_node("../Anchor")
+	var cam = get_node("../Anchor/Camera2D")
+	var view_size = get_viewport().size
+	# Remove Limits of Camera
+	cam.limit_bottom = 10000
+	cam.limit_right = 10000
+	cam.limit_left = -10000
+	cam.limit_top= -10000
+	
+	# Pause player
+	room_transition_timer.start()
+	set_physics_process(false)
+	# Check if room is bigger than viewport
+	if(area_size.x > view_size.x || area_size.y > view_size.y):
+		cam_follow_player = true
+	else:
+		cam_follow_player = false
+	tween.interpolate_property(camera_anchor, "global_position", camera_anchor.global_position, camera_target_position.global_position, 1, Tween.TRANS_SINE)
+	tween.start()
+
+
+func _on_RoomTransTimer_timeout():
+	set_physics_process(true)
