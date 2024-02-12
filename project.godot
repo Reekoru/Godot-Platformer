@@ -57,6 +57,7 @@ RestHandler="*res://addons/github-integration/scenes/RestHandler.tscn"
 
 [debug]
 
+gdscript/warnings/integer_division=false
 shapes/collision/shape_color=Color( 1, 1, 1, 0.419608 )
 
 [display]
